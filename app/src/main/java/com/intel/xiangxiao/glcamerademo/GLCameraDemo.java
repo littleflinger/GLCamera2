@@ -430,6 +430,8 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private SurfaceTexture currentWindowSurface, mSurface;
     private int mTextureViewWidth, mTextureViewHeight;
     private int mTextureID;
+    private boolean updateSurface = false;
+    private boolean isPreviewing = true;
 
     private static final int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
     private static final int EGL_CONTEXT_CLIENT_VERSTION = 0x3098;
@@ -460,11 +462,25 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     public void run() {
         initEGL();
         initOpenGLES2();
+        while (isPreviewing) {
+            synchronized (this) {
+                if (updateSurface) {
+                    mSurface.updateTexImage();
+                    mSurface.getTransformMatrix(mSTMatrix);
+                    updateSurface = false;
+                }
+            }
+            compositeFrame();
+        }
+        termGL();
     }
 
+    /**
+     * @param surfaceTexture
+     */
     @Override
     public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-
+        updateSurface = true;
     }
 
     private void initEGL(){
@@ -596,6 +612,16 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
+    }
+    private void compositeFrame() {
+
+    }
+
+    private void termGL() {
+        mEGL.eglDestroyContext(mEGLDisplay, mEGLContext);
+        mEGL.eglDestroySurface(mEGLDisplay, mEGLSurface);
+        mEGLContext = EGL10.EGL_NO_CONTEXT;
+        mEGLSurface = EGL10.EGL_NO_SURFACE;
     }
 
     private int loadShader(int shaderType, String source) {
