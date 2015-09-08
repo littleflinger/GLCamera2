@@ -1,7 +1,6 @@
 package com.intel.xiangxiao.glcamerademo;
 
 import android.app.Activity;
-import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -10,8 +9,6 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
-import android.media.ImageReader;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
@@ -35,26 +32,22 @@ import java.util.Comparator;
 import java.util.List;
 
 import javax.microedition.khronos.egl.EGL10;
-import javax.microedition.khronos.egl.EGLSurface;
-import javax.microedition.khronos.egl.EGLContext;
 import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.egl.EGLContext;
 import javax.microedition.khronos.egl.EGLDisplay;
+import javax.microedition.khronos.egl.EGLSurface;
 
 
 public class GLCameraDemo extends Activity implements TextureView.SurfaceTextureListener, Button.OnClickListener {
     private static final String TAG = "GLCameraDemo";
     private TextureView mTextureView;
-    private SurfaceTexture mSurface;
     private Button mButton;
     private boolean mStatus;
+
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
-
     private CameraManager mCameraManager;
-    private CameraDevice mCameraDevice;
-    private CameraCaptureSession mCameraCaptureSession;
-    private String mCameraId;
-    private ImageReader mCameraBuffer;
+    private GLRenderThread mGLRenderThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -73,32 +66,8 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     protected void onPause() {
         super.onPause();
         Log.d(TAG, "onPause");
-        mSurface.setDefaultBufferSize(0, 0);
-
-        try {
-            if (mCameraCaptureSession != null){
-                mCameraCaptureSession.close();
-                mCameraCaptureSession = null;
-            }
-        } finally {
-            if (mCameraDevice != null){
-                mCameraDevice.close();
-                mCameraDevice = null;
-                mCameraManager = null;
-                mCameraId = null;
-            }
-        }
-
-        mBackgroundThread.quitSafely();
-        try {
-            mBackgroundThread.join();
-        } catch (InterruptedException ex) {
-            Log.d(TAG, "Background work thread was interrupted while joined", ex);
-            ex.printStackTrace();
-        }
-
-        if (mCameraBuffer != null){
-            mCameraBuffer.close();
+        if (mGLRenderThread != null) {
+            mGLRenderThread.onPause();
         }
     }
 
@@ -106,10 +75,14 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     protected void onResume() {
         super.onResume();
         Log.d(TAG, "onResume");
+        mCameraManager = (CameraManager)getSystemService(CAMERA_SERVICE);
         mTextureView.setSurfaceTextureListener(this);
-        mBackgroundThread = new HandlerThread("background");
+        mBackgroundThread = new HandlerThread("backgroundThread");
         mBackgroundThread.start();
         mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+        if (mGLRenderThread != null) {
+            mGLRenderThread.onResume();
+        }
     }
 
     @Override
@@ -124,43 +97,6 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         Log.d(TAG, "onDestroy");
     }
 
-    private void initCamera2(SurfaceTexture surfaceTexture, int width, int height){
-        Log.d(TAG, "init camera");
-        mCameraManager = (CameraManager)getSystemService(CAMERA_SERVICE);
-        try {
-            for (String cameraid : mCameraManager.getCameraIdList()){
-                CameraCharacteristics cameraCharacteristics = mCameraManager.getCameraCharacteristics(cameraid);
-                if (cameraCharacteristics.get(CameraCharacteristics.LENS_FACING) ==
-                        CameraCharacteristics.LENS_FACING_BACK){
-                    Log.d(TAG, "Found a back-facing camera.");
-
-                    StreamConfigurationMap info = cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-
-                    Size largestSize = Collections.max(Arrays.asList(info.getOutputSizes(ImageFormat.JPEG)), new CompareSizesByArea());
-                    Log.d(TAG, "Capture size: " + largestSize);
-
-                    mCameraBuffer = ImageReader.newInstance(largestSize.getWidth(),
-                            largestSize.getHeight(), ImageFormat.JPEG, 2);
-                    mCameraBuffer.setOnImageAvailableListener(mImageCaptureListener, mBackgroundHandler);
-
-                    Log.d(TAG, "mTextureView size: " + mTextureView.getWidth() + "x" + mTextureView.getHeight());
-                    Size optimalSize = chooseBigEnoughSize(info.getOutputSizes(surfaceTexture.getClass()),width, height);
-                    Log.d(TAG, "preview size: " + optimalSize);
-                    surfaceTexture.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
-
-                    mCameraId = cameraid;
-                    mSurface = surfaceTexture;
-
-                    mCameraManager.openCamera(mCameraId, mCameraStateCallback, mBackgroundHandler);
-                    return;
-                }
-            }
-        } catch (CameraAccessException ex){
-            Log.e(TAG, "open camera2 failed." + ex.getMessage());
-            ex.printStackTrace();
-        }
-    }
-
     /**
      * Invoked when a {@link TextureView}'s SurfaceTexture is ready for use.
      *
@@ -172,7 +108,10 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
         Log.d(TAG, "onSurfaceTextureAvailable");
-        initCamera2(surface, width, height);
+        //initCamera2(surface, width, height);
+        mGLRenderThread = new GLRenderThread(mBackgroundThread, mBackgroundHandler,
+                surface, width, height, mCameraManager);
+        mGLRenderThread.start();
     }
 
     /**
@@ -209,7 +148,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
      */
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
-
+        //Log.d(TAG, "onSurfaceTextureUpdated");
     }
 
     /**
@@ -229,136 +168,6 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         }
     }
 
-    static class CompareSizesByArea implements Comparator<Size> {
-
-        /**
-         * Compares the two specified objects to determine their relative ordering. The ordering
-         * implied by the return value of this method for all possible pairs of
-         * {@code (lhs, rhs)} should form an <i>equivalence relation</i>.
-         * This means that
-         * <ul>
-         * <li>{@code compare(a,a)} returns zero for all {@code a}</li>
-         * <li>the sign of {@code compare(a,b)} must be the opposite of the sign of {@code
-         * compare(b,a)} for all pairs of (a,b)</li>
-         * <li>From {@code compare(a,b) > 0} and {@code compare(b,c) > 0} it must
-         * follow {@code compare(a,c) > 0} for all possible combinations of {@code
-         * (a,b,c)}</li>
-         * </ul>
-         *
-         * @param lhs an {@code Object}.
-         * @param rhs a second {@code Object} to compare with {@code lhs}.
-         * @return an integer < 0 if {@code lhs} is less than {@code rhs}, 0 if they are
-         * equal, and > 0 if {@code lhs} is greater than {@code rhs}.
-         * @throws ClassCastException if objects are not of the correct type.
-         */
-        @Override
-        public int compare(Size lhs, Size rhs) {
-            return Long.signum((long)lhs.getWidth()*lhs.getHeight()-(long)rhs.getWidth()*rhs.getHeight());
-        }
-    }
-
-    final CameraDevice.StateCallback mCameraStateCallback = new CameraDevice.StateCallback() {
-        @Override
-        public void onOpened(CameraDevice camera) {
-            Log.d(TAG, "open camera2 successfully.");
-            mCameraDevice = camera;
-            try {
-                mCameraDevice.createCaptureSession(Arrays.asList(new Surface(mSurface)), mCaptureStateCallback, mBackgroundHandler);
-            } catch (CameraAccessException ex) {
-                Log.e(TAG, "Fail to create a camera capture session.");
-                ex.printStackTrace();
-            }
-        }
-
-        @Override
-        public void onDisconnected(CameraDevice camera) {
-
-        }
-
-        @Override
-        public void onError(CameraDevice camera, int error) {
-
-        }
-    };
-
-    final CameraCaptureSession.StateCallback mCaptureStateCallback = new CameraCaptureSession.StateCallback() {
-        @Override
-        public void onConfigured(CameraCaptureSession session) {
-            Log.d(TAG, "finish configure camera.");
-            mCameraCaptureSession = session;
-
-            try {
-                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                requestBuilder.addTarget(new Surface(mSurface));
-
-                try {
-                    mCameraCaptureSession.setRepeatingRequest(requestBuilder.build(), null, mBackgroundHandler);
-                } catch (CameraAccessException ex) {
-                    Log.d(TAG, "setRepeatingRequest failed.");
-                    ex.printStackTrace();
-                }
-
-            } catch (CameraAccessException ex) {
-                Log.d(TAG, "createCaptureRequest failed.");
-                ex.printStackTrace();
-            }
-
-        }
-
-        @Override
-        public void onConfigureFailed(CameraCaptureSession session) {
-            Log.d(TAG, "configuration error!");
-        }
-
-        @Override
-        public void onClosed(CameraCaptureSession session) {
-            super.onClosed(session);
-            mCameraCaptureSession = null;
-        }
-    };
-
-    final ImageReader.OnImageAvailableListener mImageCaptureListener = new ImageReader.OnImageAvailableListener(){
-        /**
-         * Callback that is called when a new image is available from ImageReader.
-         *
-         * @param reader the ImageReader the callback is associated with.
-         * @see ImageReader
-         * @see Image
-         */
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-
-        }
-    };
-
-    /**
-     * Given {@code choices} of {@code Size}s supported by a camera, chooses the smallest one whose
-     * width and height are at least as large as the respective requested values.
-     * @param choices The list of sizes that the camera supports for the intended output class
-     * @param width The minimum desired width
-     * @param height The minimum desired height
-     * @return The optimal {@code Size}, or an arbitrary one if none were big enough
-     */
-    static Size chooseBigEnoughSize(Size[] choices, int width, int height) {
-        // Collect the supported resolutions that are at least as big as the preview Surface
-        List<Size> bigEnough = new ArrayList<>();
-        for (Size option : choices) {
-            Log.d(TAG, "option size: " + option.getWidth() + "x" + option.getHeight());
-            /*Attention: As internal format's sizes are different
-              with android view size,so wo need to invert this*/
-            if (option.getWidth() >= height && option.getHeight() >= width) {
-                bigEnough.add(option);
-            }
-        }
-
-        // Pick the smallest of those, assuming we found any
-        if (bigEnough.size() > 0) {
-            return Collections.min(bigEnough, new CompareSizesByArea());
-        } else {
-            Log.e(TAG, "Couldn't find any suitable preview size");
-            return choices[0];
-        }
-    }
 }
 
 class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableListener {
@@ -368,7 +177,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private static final int TRIANGLE_VERTICES_STRIDE = 5 * FLOAT_SIZE;
     private static final int TRIANGLE_VERTICES_POS_OFFSET = 0;
     private static final int TRIANGLE_VERTICES_UV_OFFSET = 3;
-    private final float[] mBigTriangleVerticesData = {
+/*    private final float[] mBigTriangleVerticesData = {
             -4.5f, -8.0f, 0, 0.f, 0.f,
              4.5f, -8.0f, 0, 1.f, 0.f,
             -4.5f,  8.0f, 0, 0.f, 1.f,
@@ -379,6 +188,21 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
              4.5f,  4.0f, 0, 1.f, 0.f,
             2.25f,  8.0f, 0, 0.f, 1.f,
              4.5f,  8.0f, 0, 1.f, 1.f
+    };
+*/
+    private final float[] mBigTriangleVerticesData = {
+            // X, Y, Z, U, V
+            -2.0f, -1.0f, 0, 0.f, 0.f,
+            2.0f, -1.0f, 0, 1.f, 0.f,
+            -2.0f,  1.0f, 0, 0.f, 1.f,
+            2.0f,   1.0f, 0, 1.f, 1.f,
+    };
+    private final float[] mSmallTriangleVerticesData = {
+            // X, Y, Z, U, V
+            1.0f, 0.0f, 0, 0.f, 0.f,
+            2.0f, 0.0f, 0, 1.f, 0.f,
+            1.0f,  1.0f, 0, 0.f, 1.f,
+            2.0f,  1.0f, 0, 1.f, 1.f,
     };
 
     private FloatBuffer mBigTriangleVertices;
@@ -413,7 +237,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private float[] mVMatrix = new float[16];
     private float[] mSTMatrix = new float[16];
     private float mRatio = 1.0f;
-    private float mCameraRatio = 1.0f;
+    //private float mCameraRatio = 1.0f;
 
     private int maPositionHandle;
     private int maTextureCoordHandle;
@@ -430,6 +254,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private SurfaceTexture currentWindowSurface, mSurface;
     private int mTextureViewWidth, mTextureViewHeight;
     private int mTextureID;
+    private int mProgram;
     private boolean updateSurface = false;
     private boolean isPreviewing = true;
 
@@ -437,10 +262,22 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private static final int EGL_CONTEXT_CLIENT_VERSTION = 0x3098;
     private static final int EGL_OPENGL_ES2_BIT = 4;
 
-    public GLRenderThread(SurfaceTexture surface, int width, int height) {
+    private CameraManager mCameraManager;
+    private CameraDevice mCameraDevice;
+    private CameraCaptureSession mCameraCaptureSession;
+    private String mCameraId;
+    //private ImageReader mCameraBuffer;
+    private HandlerThread mBackgroundThread;
+    private Handler mBackgroundHandler;
+
+    public GLRenderThread(HandlerThread handlerThread, Handler handler, SurfaceTexture surface, int width, int height, CameraManager cameraManager) {
+        //super(name);
+        mBackgroundThread = handlerThread;
+        mBackgroundHandler = handler;
         currentWindowSurface = surface;
         mTextureViewWidth = width;
         mTextureViewHeight = height;
+        mCameraManager = cameraManager;
 
         mBigTriangleVertices = ByteBuffer.allocateDirect(mBigTriangleVerticesData.length
                 * FLOAT_SIZE).order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -452,16 +289,13 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
         Matrix.setIdentityM(mSTMatrix, 0);
         Matrix.setIdentityM(mMMatrix, 0);
-
-        mEGLSurface = EGL10.EGL_NO_SURFACE;
-        mEGLDisplay = EGL10.EGL_NO_DISPLAY;
-        mEGLContext = EGL10.EGL_NO_CONTEXT;
     }
 
     @Override
     public void run() {
         initEGL();
         initOpenGLES2();
+        initCamera2();
         while (isPreviewing) {
             synchronized (this) {
                 if (updateSurface) {
@@ -475,13 +309,42 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         termGL();
     }
 
-    /**
-     * @param surfaceTexture
-     */
+    public void onPause() {
+        try {
+            if (mCameraCaptureSession != null){
+                mCameraCaptureSession.close();
+                mCameraCaptureSession = null;
+            }
+        } finally {
+            if (mCameraDevice != null){
+                mCameraDevice.close();
+                mCameraDevice = null;
+                mCameraManager = null;
+                mCameraId = null;
+            }
+        }
+
+        mBackgroundThread.quitSafely();
+        try {
+            mBackgroundThread.join();
+        } catch (InterruptedException ex) {
+            Log.d(TAG, "Background work thread was interrupted while joined", ex);
+            ex.printStackTrace();
+        }
+
+        isPreviewing = false;
+    }
+
+    public void onResume() {
+        isPreviewing = true;
+    }
+
     @Override
-    public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+        Log.d(TAG, "onFrameAvailable");
         updateSurface = true;
     }
+
 
     private void initEGL(){
         Log.d(TAG, "start initialize EGL");
@@ -539,6 +402,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
         Log.d(TAG, "finish initialize EGL");
     }
+
     private void initOpenGLES2() {
         Log.d(TAG, "start initialize OPenGL ES2.0");
 
@@ -565,24 +429,30 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
                 return;
             }
         }
+        mProgram = program;
 
         maPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+        checkGLError("glGetAttribLocation aPosition");
         if (maPositionHandle == -1) {
             throw new RuntimeException("Could not get attrib location for aPosition");
         }
         maTextureCoordHandle = GLES20.glGetAttribLocation(program, "aTextureCoord");
+        checkGLError("glGetAttribLocation aTextureCoord");
         if (maTextureCoordHandle == -1) {
             throw new RuntimeException("Could not get attrib location for aTextureCoord");
         }
         muMPMatrixHandle = GLES20.glGetUniformLocation(program, "uMPMatrix");
+        checkGLError("glGetUniformLocation uMPMatrix");
         if (muMPMatrixHandle == -1) {
             throw new RuntimeException("Could not get uniform location for uMPMatrix");
         }
         muSTMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix");
+        checkGLError("glGetUniformLocation uSTMatrix");
         if (muSTMatrixHandle == -1) {
             throw new RuntimeException("Could not get uniform location for uSTMatrix");
         }
         muRatioHandle = GLES20.glGetUniformLocation(program, "uRatio");
+        checkGLError("glGetUniformLocation uRatio");
         if (muRatioHandle == -1) {
             throw new RuntimeException("Could not get uniform location for uRatio");
         }
@@ -591,6 +461,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         GLES20.glGenTextures(1, textures, 0);
         mTextureID = textures[0];
         GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
+        checkGLError("glBindTexture mTextureID");
 
         GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
         GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
@@ -604,17 +475,106 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             Log.d(TAG, "mSurface is different form currentWindowSurface");
         }
 
-        Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f);
+        //Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f);
+        Matrix.setLookAtM(mVMatrix, 0, 0, 0, 3f, 0f, 0f, 0f, 0f, 1.0f, 0.0f);
+
         GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
         mRatio = (float)mTextureViewWidth / mTextureViewHeight;
-        Matrix.frustumM(mProjMatrix, 0, -(mRatio * 8), mRatio * 8, -8.0f, 8.0f, 3.0f, 15.0f);
+        //Matrix.frustumM(mProjMatrix, 0, -(mRatio * 8), mRatio * 8, -8.0f, 8.0f, 3.0f, 15.0f);
+        Matrix.frustumM(mProjMatrix, 0, -mRatio, mRatio, -1, 1, 3, 7);
 
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
+        //GLES20.glClearColor(0.f, 0.f, 0.f, 1.0f);
+    }
+
+    private void initCamera2() {
+        Log.d(TAG, "init camera");
+        try {
+            for (String cameraid : mCameraManager.getCameraIdList()){
+                CameraCharacteristics cameraCharacteristics = mCameraManager.getCameraCharacteristics(cameraid);
+                if (cameraCharacteristics.get(CameraCharacteristics.LENS_FACING) ==
+                        CameraCharacteristics.LENS_FACING_BACK){
+                    Log.d(TAG, "Found a back-facing camera.");
+
+                    StreamConfigurationMap info = cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+
+                    Log.d(TAG, "mTextureView size: " + mTextureViewWidth + "x" + mTextureViewHeight);
+                    Size optimalSize = chooseBigEnoughSize(info.getOutputSizes(mSurface.getClass()),mTextureViewWidth, mTextureViewHeight);
+                    Log.d(TAG, "preview size: " + optimalSize);
+                    mSurface.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
+
+                    mCameraId = cameraid;
+
+                    mCameraManager.openCamera(mCameraId, mCameraStateCallback, mBackgroundHandler);
+                    return;
+                }
+            }
+        } catch (CameraAccessException ex){
+            Log.e(TAG, "open camera2 failed." + ex.getMessage());
+            ex.printStackTrace();
+        }
     }
     private void compositeFrame() {
+        mEGL.eglMakeCurrent(mEGLDisplay, mEGLSurface, mEGLSurface, mEGLContext);
+        checkEGLError("eglMakeCurrent");
 
+        GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
+        GLES20.glUseProgram(mProgram);
+        checkGLError("glUseProgram");
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
+
+        mBigTriangleVertices.position(TRIANGLE_VERTICES_POS_OFFSET);
+        GLES20.glVertexAttribPointer(maPositionHandle, 3, GLES20.GL_FLOAT, false,
+                TRIANGLE_VERTICES_STRIDE, mBigTriangleVertices);
+        checkGLError("glVertexAttribPointer maPositionHandle");
+        GLES20.glEnableVertexAttribArray(maPositionHandle);
+        checkGLError("glEnableVertexAttribArray maPositionHandle");
+
+        mBigTriangleVertices.position(TRIANGLE_VERTICES_UV_OFFSET);
+        GLES20.glVertexAttribPointer(maTextureCoordHandle, 3, GLES20.GL_FLOAT, false,
+                TRIANGLE_VERTICES_STRIDE, mBigTriangleVertices);
+        checkGLError("glVertexAttribPointer maTextureHandle");
+        GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
+        checkGLError("glEnableVertexAttribArray maTextureHandle");
+
+        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
+        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
+
+        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 0, false, mMPMatrix, 0);
+        GLES20.glUniformMatrix4fv(muSTMatrixHandle, 0, false, mSTMatrix, 0);
+        GLES20.glUniform1f(muRatioHandle, mRatio);
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        checkGLError("glDrawArrays");
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
+
+        mSmallTriangleVertices.position(TRIANGLE_VERTICES_POS_OFFSET);
+        GLES20.glVertexAttribPointer(maPositionHandle, 3, GLES20.GL_FLOAT, false,
+                TRIANGLE_VERTICES_STRIDE, mSmallTriangleVertices);
+        checkGLError("glVertexAttribPointer maPositionHandle");
+        GLES20.glEnableVertexAttribArray(maPositionHandle);
+        checkGLError("glEnableVertexAttribArray maPositionHandle");
+
+        mSmallTriangleVertices.position(TRIANGLE_VERTICES_UV_OFFSET);
+        GLES20.glVertexAttribPointer(maTextureCoordHandle, 3, GLES20.GL_FLOAT, false,
+                TRIANGLE_VERTICES_STRIDE, mSmallTriangleVertices);
+        checkGLError("glVertexAttribPointer maTextureHandle");
+        GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
+        checkGLError("glEnableVertexAttribArray maTextureHandle");
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        checkGLError("glDrawArrays");
+
+        if (! mEGL.eglSwapBuffers(mEGLDisplay, mEGLSurface)) {
+            Log.e(TAG, "Cannot swap buffers!");
+        }
+        checkGLError("eglSwapBuffers");
     }
 
     private void termGL() {
@@ -622,6 +582,126 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         mEGL.eglDestroySurface(mEGLDisplay, mEGLSurface);
         mEGLContext = EGL10.EGL_NO_CONTEXT;
         mEGLSurface = EGL10.EGL_NO_SURFACE;
+    }
+
+    static class CompareSizesByArea implements Comparator<Size> {
+
+        /**
+         * Compares the two specified objects to determine their relative ordering. The ordering
+         * implied by the return value of this method for all possible pairs of
+         * {@code (lhs, rhs)} should form an <i>equivalence relation</i>.
+         * This means that
+         * <ul>
+         * <li>{@code compare(a,a)} returns zero for all {@code a}</li>
+         * <li>the sign of {@code compare(a,b)} must be the opposite of the sign of {@code
+         * compare(b,a)} for all pairs of (a,b)</li>
+         * <li>From {@code compare(a,b) > 0} and {@code compare(b,c) > 0} it must
+         * follow {@code compare(a,c) > 0} for all possible combinations of {@code
+         * (a,b,c)}</li>
+         * </ul>
+         *
+         * @param lhs an {@code Object}.
+         * @param rhs a second {@code Object} to compare with {@code lhs}.
+         * @return an integer < 0 if {@code lhs} is less than {@code rhs}, 0 if they are
+         * equal, and > 0 if {@code lhs} is greater than {@code rhs}.
+         * @throws ClassCastException if objects are not of the correct type.
+         */
+        @Override
+        public int compare(Size lhs, Size rhs) {
+            return Long.signum((long)lhs.getWidth()*lhs.getHeight()-(long)rhs.getWidth()*rhs.getHeight());
+        }
+    }
+
+    final CameraDevice.StateCallback mCameraStateCallback = new CameraDevice.StateCallback() {
+        @Override
+        public void onOpened(CameraDevice camera) {
+            Log.d(TAG, "open camera2 successfully.");
+            mCameraDevice = camera;
+            try {
+                List<Surface> outputSurfaces = new ArrayList<>();
+                outputSurfaces.add(new Surface(mSurface));
+                //outputSurfaces.add(new Surface(currentWindowSurface));
+                mCameraDevice.createCaptureSession(outputSurfaces, mCaptureStateCallback, mBackgroundHandler);
+            } catch (CameraAccessException ex) {
+                Log.e(TAG, "Fail to create a camera capture session.");
+                ex.printStackTrace();
+            }
+        }
+
+        @Override
+        public void onDisconnected(CameraDevice camera) {
+
+        }
+
+        @Override
+        public void onError(CameraDevice camera, int error) {
+
+        }
+    };
+
+    final CameraCaptureSession.StateCallback mCaptureStateCallback = new CameraCaptureSession.StateCallback() {
+        @Override
+        public void onConfigured(CameraCaptureSession session) {
+            Log.d(TAG, "finish configure camera.");
+            mCameraCaptureSession = session;
+
+            try {
+                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                requestBuilder.addTarget(new Surface(mSurface));
+
+                try {
+                    mCameraCaptureSession.setRepeatingRequest(requestBuilder.build(), null, mBackgroundHandler);
+                } catch (CameraAccessException ex) {
+                    Log.d(TAG, "setRepeatingRequest failed.");
+                    ex.printStackTrace();
+                }
+
+            } catch (CameraAccessException ex) {
+                Log.d(TAG, "createCaptureRequest failed.");
+                ex.printStackTrace();
+            }
+
+        }
+
+        @Override
+        public void onConfigureFailed(CameraCaptureSession session) {
+            Log.d(TAG, "configuration error!");
+        }
+
+        @Override
+        public void onClosed(CameraCaptureSession session) {
+            super.onClosed(session);
+            mCameraCaptureSession = null;
+        }
+    };
+
+    /**
+     * Given {@code choices} of {@code Size}s supported by a camera, chooses the smallest one whose
+     * width and height are at least as large as the respective requested values.
+     * @param choices The list of sizes that the camera supports for the intended output class
+     * @param width The minimum desired width
+     * @param height The minimum desired height
+     * @return The optimal {@code Size}, or an arbitrary one if none were big enough
+     */
+    static Size chooseBigEnoughSize(Size[] choices, int width, int height) {
+        // Collect the supported resolutions that are at least as big as the preview Surface
+        List<Size> bigEnough = new ArrayList<>();
+        for (Size option : choices) {
+            Log.d(TAG, "option size: " + option.getWidth() + "x" + option.getHeight());
+            /*Attention: As internal format's sizes are different
+              with android view size,so wo need to invert this*/
+            if (option.getWidth() >= height && option.getHeight() >= width) {
+                bigEnough.add(option);
+            }
+        }
+
+        // Pick the smallest of those, assuming we found any
+        if (bigEnough.size() > 0) {
+            return Collections.min(bigEnough, new CompareSizesByArea());
+        } else {
+            Log.e(TAG, "Couldn't find any suitable preview size");
+            return choices[0];
+        }
     }
 
     private int loadShader(int shaderType, String source) {
@@ -644,6 +724,14 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         Log.d(TAG, op);
         if (mEGL.eglGetError() != EGL10.EGL_SUCCESS) {
             throw new RuntimeException(op + ": eglError: " + GLUtils.getEGLErrorString(mEGL.eglGetError()));
+        }
+    }
+    private void checkGLError(String op) {
+        int error;
+        //Log.d(TAG, op);
+        if ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
+            Log.e(TAG, op + ": glError " + error);
+            throw new RuntimeException(op + ": glError " + error);
         }
     }
 }
