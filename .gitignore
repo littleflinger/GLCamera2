@@ -5,4 +5,5 @@
 /build
 /captures
 GLCamera2.iml
-app/app.iml
+/app/app.iml
+/app/*.apk
