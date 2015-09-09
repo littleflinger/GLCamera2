@@ -26,7 +26,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -54,12 +53,11 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main_activity_view);
         mTextureView = (TextureView)findViewById(R.id.camera_view);
-        mTextureView.setRotation(180.0f);
+        //mTextureView.setRotation(180.0f);
         mButton = (Button)findViewById(R.id.switch_button);
         mButton.setText("start");
         mButton.setOnClickListener(this);
         mStatus = false;
-        //setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
     }
 
     @Override
@@ -177,7 +175,8 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private static final int TRIANGLE_VERTICES_STRIDE = 5 * FLOAT_SIZE;
     private static final int TRIANGLE_VERTICES_POS_OFFSET = 0;
     private static final int TRIANGLE_VERTICES_UV_OFFSET = 3;
-/*    private final float[] mBigTriangleVerticesData = {
+/*
+    private final float[] mBigTriangleVerticesData = {
             -4.5f, -8.0f, 0, 0.f, 0.f,
              4.5f, -8.0f, 0, 1.f, 0.f,
             -4.5f,  8.0f, 0, 0.f, 1.f,
@@ -192,17 +191,17 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 */
     private final float[] mBigTriangleVerticesData = {
             // X, Y, Z, U, V
-            -2.0f, -1.0f, 0, 0.f, 0.f,
-            2.0f, -1.0f, 0, 1.f, 0.f,
-            -2.0f,  1.0f, 0, 0.f, 1.f,
-            2.0f,   1.0f, 0, 1.f, 1.f,
+            -1.0f, -1.0f, 0, 0.f, 0.f,
+             1.0f, -1.0f, 0, 1.f, 0.f,
+            -1.0f,  1.0f, 0, 0.f, 1.f,
+             1.0f,  1.0f, 0, 1.f, 1.f,
     };
     private final float[] mSmallTriangleVerticesData = {
             // X, Y, Z, U, V
-            1.0f, 0.0f, 0, 0.f, 0.f,
-            2.0f, 0.0f, 0, 1.f, 0.f,
-            1.0f,  1.0f, 0, 0.f, 1.f,
-            2.0f,  1.0f, 0, 1.f, 1.f,
+            -1.0f, -1.0f, 0, 0.f, 0.f,
+             0.0f, -1.0f, 0, 1.f, 0.f,
+            -1.0f,  0.0f, 0, 0.f, 1.f,
+             0.0f,  0.0f, 0, 1.f, 1.f,
     };
 
     private FloatBuffer mBigTriangleVertices;
@@ -237,7 +236,6 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private float[] mVMatrix = new float[16];
     private float[] mSTMatrix = new float[16];
     private float mRatio = 1.0f;
-    //private float mCameraRatio = 1.0f;
 
     private int maPositionHandle;
     private int maTextureCoordHandle;
@@ -266,12 +264,10 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private CameraDevice mCameraDevice;
     private CameraCaptureSession mCameraCaptureSession;
     private String mCameraId;
-    //private ImageReader mCameraBuffer;
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
 
     public GLRenderThread(HandlerThread handlerThread, Handler handler, SurfaceTexture surface, int width, int height, CameraManager cameraManager) {
-        //super(name);
         mBackgroundThread = handlerThread;
         mBackgroundHandler = handler;
         currentWindowSurface = surface;
@@ -295,7 +291,6 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     public void run() {
         initEGL();
         initOpenGLES2();
-        initCamera2();
         while (isPreviewing) {
             synchronized (this) {
                 if (updateSurface) {
@@ -471,22 +466,19 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         mSurface = new SurfaceTexture(mTextureID);
         mSurface.setOnFrameAvailableListener(this);
 
-        if (mSurface != currentWindowSurface) {
-            Log.d(TAG, "mSurface is different form currentWindowSurface");
-        }
+        initCamera2();
 
-        //Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f);
-        Matrix.setLookAtM(mVMatrix, 0, 0, 0, 3f, 0f, 0f, 0f, 0f, 1.0f, 0.0f);
+        /* set the LookAt's up direction to negative, since
+         * the textureView orientation is upside-down
+         */
+        Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f);
 
         GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
-        mRatio = (float)mTextureViewWidth / mTextureViewHeight;
-        //Matrix.frustumM(mProjMatrix, 0, -(mRatio * 8), mRatio * 8, -8.0f, 8.0f, 3.0f, 15.0f);
-        Matrix.frustumM(mProjMatrix, 0, -mRatio, mRatio, -1, 1, 3, 7);
+        Matrix.frustumM(mProjMatrix, 0, -mRatio, mRatio, -1.0f, 1.0f, 1.0f, 300.0f);
 
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
-        //GLES20.glClearColor(0.f, 0.f, 0.f, 1.0f);
     }
 
     private void initCamera2() {
@@ -504,9 +496,9 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
                     Size optimalSize = chooseBigEnoughSize(info.getOutputSizes(mSurface.getClass()),mTextureViewWidth, mTextureViewHeight);
                     Log.d(TAG, "preview size: " + optimalSize);
                     mSurface.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
+                    mRatio = (float)optimalSize.getHeight() / optimalSize.getWidth();
 
                     mCameraId = cameraid;
-
                     mCameraManager.openCamera(mCameraId, mCameraStateCallback, mBackgroundHandler);
                     return;
                 }
@@ -544,8 +536,8 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
         Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
 
-        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 0, false, mMPMatrix, 0);
-        GLES20.glUniformMatrix4fv(muSTMatrixHandle, 0, false, mSTMatrix, 0);
+        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
+        GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
         GLES20.glUniform1f(muRatioHandle, mRatio);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
@@ -620,7 +612,6 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             try {
                 List<Surface> outputSurfaces = new ArrayList<>();
                 outputSurfaces.add(new Surface(mSurface));
-                //outputSurfaces.add(new Surface(currentWindowSurface));
                 mCameraDevice.createCaptureSession(outputSurfaces, mCaptureStateCallback, mBackgroundHandler);
             } catch (CameraAccessException ex) {
                 Log.e(TAG, "Fail to create a camera capture session.");
