@@ -13,7 +13,9 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaRecorder;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -23,10 +25,14 @@ import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 
+import java.io.File;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
 
 
@@ -39,11 +45,15 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
 
+    private Size mVideoRecordSize;
+    private static final File OUTPUT_DIR = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM);
+    private MediaRecorder mMediaRecorder;
     private CameraManager mCameraManager;
     private CameraDevice mCameraDevice;
     private CameraCaptureSession mCameraCaptureSession;
     private String mCameraId;
     private ImageReader mCameraBuffer;
+    private Surface mPreviewSurface, mRecorderSurface;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -137,9 +147,12 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
                     Log.d(TAG, "preview size: " + optimalSize);
                     surfaceTexture.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
 
+                    printAllRecordSizes(info.getOutputSizes(MediaRecorder.class));
                     mCameraId = cameraid;
                     mSurface = surfaceTexture;
+                    mVideoRecordSize = optimalSize;
 
+                    mMediaRecorder = new MediaRecorder();
                     mCameraManager.openCamera(mCameraId, mCameraStateCallback, mBackgroundHandler);
                     return;
                 }
@@ -148,6 +161,59 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
             Log.e(TAG, "open camera2 failed." + ex.getMessage());
             ex.printStackTrace();
         }
+    }
+
+    private void initMediaRecorder() {
+        Log.d(TAG, "external directory : " + OUTPUT_DIR.toString());
+        //String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        String outputPath = new File(OUTPUT_DIR, "Camera/test.mp4").toString();
+        Log.d(TAG, "outputPath: " + outputPath);
+        mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mMediaRecorder.setOutputFile(outputPath);
+        mMediaRecorder.setVideoEncodingBitRate(10000000);
+        mMediaRecorder.setVideoFrameRate(30);
+        //mMediaRecorder.setOrientationHint(180);
+        mMediaRecorder.setVideoSize(mVideoRecordSize.getWidth(), mVideoRecordSize.getHeight());
+        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        try {
+            mMediaRecorder.prepare();
+        } catch (IOException e) {
+            Log.e(TAG, "MediaRecorder prepare failed!!!");
+            e.printStackTrace();
+        }
+    }
+
+    public void startVideoRecord() {
+        try {
+            mMediaRecorder.start();
+        } catch (IllegalStateException ex) {
+            Log.e(TAG, "start recording failed!");
+            ex.printStackTrace();
+        }
+    }
+
+    public void stopVideoRecord() {
+        mMediaRecorder.stop();
+        mMediaRecorder.reset();
+        mMediaRecorder.release();
+        try {
+            mSurface.setDefaultBufferSize(0, 0);
+            if (mCameraCaptureSession != null){
+                mCameraCaptureSession.close();
+                mCameraCaptureSession = null;
+            }
+        } finally {
+            if (mCameraDevice != null){
+                mCameraDevice.close();
+                mCameraDevice = null;
+                mCameraManager = null;
+                mCameraId = null;
+            }
+        }
+        initCamera2(mSurface, mTextureView.getWidth(), mTextureView.getHeight());
     }
 
     /**
@@ -208,14 +274,16 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
      */
     @Override
     public void onClick(View v) {
-        mStatus = !mStatus;
         if (mStatus){
-            Log.d(TAG, "onClick: true");
+            Log.d(TAG, "onClick: stop video record");
             mButton.setText("start");
+            stopVideoRecord();
         } else {
-            Log.d(TAG, "onClick: false");
+            Log.d(TAG, "onClick: start video record");
             mButton.setText("stop");
+            startVideoRecord();
         }
+        mStatus = !mStatus;
     }
 
     static class CompareSizesByArea implements Comparator<Size> {
@@ -251,8 +319,14 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         public void onOpened(CameraDevice camera) {
             Log.d(TAG, "open camera2 successfully.");
             mCameraDevice = camera;
+            initMediaRecorder();
             try {
-                mCameraDevice.createCaptureSession(Arrays.asList(new Surface(mSurface)), mCaptureStateCallback, mBackgroundHandler);
+                List<Surface> outputTarget = new ArrayList<>();
+                mPreviewSurface = new Surface(mSurface);
+                outputTarget.add(mPreviewSurface);
+                mRecorderSurface = mMediaRecorder.getSurface();
+                outputTarget.add(mRecorderSurface);
+                mCameraDevice.createCaptureSession(outputTarget, mCaptureStateCallback, mBackgroundHandler);
             } catch (CameraAccessException ex) {
                 Log.e(TAG, "Fail to create a camera capture session.");
                 ex.printStackTrace();
@@ -277,8 +351,9 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
             mCameraCaptureSession = session;
 
             try {
-                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                requestBuilder.addTarget(new Surface(mSurface));
+                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                requestBuilder.addTarget(mPreviewSurface);
+                requestBuilder.addTarget(mRecorderSurface);
 
                 try {
                     mCameraCaptureSession.setRepeatingRequest(requestBuilder.build(), null, mBackgroundHandler);
@@ -346,6 +421,12 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         } else {
             Log.e(TAG, "Couldn't find any suitable preview size");
             return choices[0];
+        }
+    }
+
+    static void printAllRecordSizes(Size[] choicec) {
+        for (Size option : choicec) {
+            Log.d(TAG, "RecordSize : " + option.getWidth() + "x" + option.getHeight());
         }
     }
 }
