@@ -9,10 +9,15 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -22,6 +27,8 @@ import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -42,11 +49,13 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     private TextureView mTextureView;
     private Button mButton;
     private boolean mStatus;
+    private int mWidth, mHeight;
 
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
     private CameraManager mCameraManager;
     private GLRenderThread mGLRenderThread;
+    private VideoEncoderThread mVideoEncoderThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -107,6 +116,8 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
         Log.d(TAG, "onSurfaceTextureAvailable");
         //initCamera2(surface, width, height);
+        mWidth = width;
+        mHeight = height;
         mGLRenderThread = new GLRenderThread(mBackgroundThread, mBackgroundHandler,
                 surface, width, height, mCameraManager);
         mGLRenderThread.start();
@@ -156,14 +167,29 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
      */
     @Override
     public void onClick(View v) {
-        mStatus = !mStatus;
         if (mStatus){
+            mGLRenderThread.removeVideoEncoderSurface();
+            mVideoEncoderThread.stopVideoRecord();
+            try {
+                mVideoEncoderThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            mVideoEncoderThread = null;
             Log.d(TAG, "onClick: true");
             mButton.setText("start");
         } else {
+            try {
+                mVideoEncoderThread = new VideoEncoderThread(mWidth, mHeight);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            mVideoEncoderThread.start();
+            mGLRenderThread.setVideoEncoderSurface(mVideoEncoderThread.getVideoEncoderSurface());
             Log.d(TAG, "onClick: false");
             mButton.setText("stop");
         }
+        mStatus = !mStatus;
     }
 
 }
@@ -245,7 +271,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
     private EGL10 mEGL;
     private EGLDisplay mEGLDisplay;
-    private EGLSurface mEGLSurface;
+    private EGLSurface mEGLSurface, mVideoEncoderEGLSurface;
     private EGLContext mEGLContext;
     private EGLConfig mEGLConfig;
 
@@ -285,6 +311,8 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
         Matrix.setIdentityM(mSTMatrix, 0);
         Matrix.setIdentityM(mMMatrix, 0);
+
+        mVideoEncoderEGLSurface = EGL10.EGL_NO_SURFACE;
     }
 
     @Override
@@ -299,7 +327,12 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
                     updateSurface = false;
                 }
             }
-            compositeFrame();
+            compositeFrame(mEGLSurface);
+            synchronized(mVideoEncoderEGLSurface) {
+                if (mVideoEncoderEGLSurface != EGL10.EGL_NO_SURFACE) {
+                    compositeFrame(mVideoEncoderEGLSurface);
+                }
+            }
         }
         termGL();
     }
@@ -332,6 +365,21 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
     public void onResume() {
         isPreviewing = true;
+    }
+
+    public void setVideoEncoderSurface(Surface surface) {
+        mVideoEncoderEGLSurface = mEGL.eglCreateWindowSurface(mEGLDisplay,
+                mEGLConfig, surface, null);
+        checkEGLError("eglCreateWindowSurface : mVideoEncoderEGLSurface");
+    }
+
+    public void removeVideoEncoderSurface() {
+        synchronized (mVideoEncoderEGLSurface) {
+            if (mVideoEncoderEGLSurface != EGL10.EGL_NO_SURFACE) {
+                mEGL.eglDestroySurface(mEGLDisplay, mVideoEncoderEGLSurface);
+                mVideoEncoderEGLSurface = EGL10.EGL_NO_SURFACE;
+            }
+        }
     }
 
     @Override
@@ -508,9 +556,9 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             ex.printStackTrace();
         }
     }
-    private void compositeFrame() {
-        mEGL.eglMakeCurrent(mEGLDisplay, mEGLSurface, mEGLSurface, mEGLContext);
-        checkEGLError("eglMakeCurrent");
+    private void compositeFrame(EGLSurface eglSurface) {
+        mEGL.eglMakeCurrent(mEGLDisplay, eglSurface, eglSurface, mEGLContext);
+        //checkEGLError("eglMakeCurrent");
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
         GLES20.glUseProgram(mProgram);
@@ -563,7 +611,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         checkGLError("glDrawArrays");
 
-        if (! mEGL.eglSwapBuffers(mEGLDisplay, mEGLSurface)) {
+        if (! mEGL.eglSwapBuffers(mEGLDisplay, eglSurface)) {
             Log.e(TAG, "Cannot swap buffers!");
         }
         checkGLError("eglSwapBuffers");
@@ -724,6 +772,97 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             Log.e(TAG, op + ": glError " + error);
             throw new RuntimeException(op + ": glError " + error);
         }
+    }
+}
+class VideoEncoderThread extends Thread {
+    private static final String TAG = "VideoEncoderThread";
+    private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
+    private MediaFormat mMediaFormat;
+    private MediaCodec mVideoEncoder;
+    private MediaMuxer mMediaMuxer;
+    private Surface mSurface;
+
+    public VideoEncoderThread(int width, int length) throws IOException {
+
+        mMediaFormat = MediaFormat.createVideoFormat("video/avc", width, length);
+        mMediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        mMediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, 10000000);
+        mMediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+        mMediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10);
+        mVideoEncoder = MediaCodec.createEncoderByType("video/avc");
+        mVideoEncoder.setCallback(new MediaCodec.Callback() {
+            /**
+             * Called when an input buffer becomes available.
+             *
+             * @param codec The MediaCodec object.
+             * @param index The index of the available input buffer.
+             */
+            @Override
+            public void onInputBufferAvailable(MediaCodec codec, int index) {
+                Log.d(TAG, "onInputBufferAvailable");
+            }
+
+            /**
+             * Called when an output buffer becomes available.
+             *
+             * @param codec The MediaCodec object.
+             * @param index The index of the available output buffer.
+             * @param info  Info regarding the available output buffer {@link MediaCodec.BufferInfo}.
+             */
+            @Override
+            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+                Log.d(TAG, "onOutputBufferAvailable");
+            }
+
+            /**
+             * Called when the MediaCodec encountered an error
+             *
+             * @param codec The MediaCodec object.
+             * @param e     The {@link MediaCodec.CodecException} object describing the error.
+             */
+            @Override
+            public void onError(MediaCodec codec, MediaCodec.CodecException e) {
+                Log.e(TAG, "onError");
+                if (e.isRecoverable()) {
+                    Log.e(TAG, "isRecoverable");
+                }
+                if (e.isTransient()) {
+                    Log.e(TAG, "isTransient");
+                }
+                e.printStackTrace();
+            }
+
+            /**
+             * Called when the output format has changed
+             *
+             * @param codec  The MediaCodec object.
+             * @param format The new output format.
+             */
+            @Override
+            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+                Log.d(TAG, "onOutputFormatChanged");
+            }
+        });
+        mVideoEncoder.configure(mMediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        mSurface = mVideoEncoder.createInputSurface();
+
+        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        mMediaMuxer = new MediaMuxer(outputPath,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+
+        mVideoEncoder.start();
+    }
+
+    public void stopVideoRecord() {
+        mVideoEncoder.signalEndOfInputStream();
+        mVideoEncoder.stop();
+        mVideoEncoder.release();
+        mVideoEncoder = null;
+    }
+
+    public Surface getVideoEncoderSurface() {
+        return mSurface;
     }
 }
 
