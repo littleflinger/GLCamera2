@@ -76,6 +76,14 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         if (mGLRenderThread != null) {
             mGLRenderThread.onPause();
         }
+        if (mVideoEncoderThread != null) {
+            try {
+                mVideoEncoderThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            mVideoEncoderThread = null;
+        }
     }
 
     @Override
@@ -180,7 +188,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
             mButton.setText("start");
         } else {
             try {
-                mVideoEncoderThread = new VideoEncoderThread(mWidth, mHeight);
+                mVideoEncoderThread = new VideoEncoderThread(720, 1280);
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -781,15 +789,20 @@ class VideoEncoderThread extends Thread {
     private MediaCodec mVideoEncoder;
     private MediaMuxer mMediaMuxer;
     private Surface mSurface;
+    private int mTrackIndex;
+    private int mFrameCount;
+    private boolean mVideoEncoderDone;
 
     public VideoEncoderThread(int width, int length) throws IOException {
 
+        mVideoEncoderDone = false;
+        mFrameCount = 0;
         mMediaFormat = MediaFormat.createVideoFormat("video/avc", width, length);
         mMediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        mMediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, 10000000);
+        mMediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, 2000000);
         mMediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
-        mMediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10);
+        mMediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         mVideoEncoder = MediaCodec.createEncoderByType("video/avc");
         mVideoEncoder.setCallback(new MediaCodec.Callback() {
             /**
@@ -813,6 +826,22 @@ class VideoEncoderThread extends Thread {
             @Override
             public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
                 Log.d(TAG, "onOutputBufferAvailable");
+                ByteBuffer outputBuffer = codec.getOutputBuffer(index);
+
+                if (outputBuffer != null) {
+                    outputBuffer.position(info.offset);
+                    outputBuffer.limit(info.offset + info.size);
+                    info.presentationTimeUs = computePresentationTimeNsec(mFrameCount++);
+                    mMediaMuxer.writeSampleData(mTrackIndex, outputBuffer, info);
+                }
+
+                if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                    mVideoEncoderDone = true;
+                }
+                mVideoEncoder.releaseOutputBuffer(index, false);
+                if (mVideoEncoderDone) {
+                    stopVideoRecord();
+                }
             }
 
             /**
@@ -842,12 +871,16 @@ class VideoEncoderThread extends Thread {
             @Override
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
                 Log.d(TAG, "onOutputFormatChanged");
+                mTrackIndex = mMediaMuxer.addTrack(format);
+                mMediaMuxer.start();
             }
         });
+        Log.d(TAG, "configure format: " + mMediaFormat);
         mVideoEncoder.configure(mMediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mSurface = mVideoEncoder.createInputSurface();
 
         String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        Log.d(TAG, "outputPath = : " + outputPath);
         mMediaMuxer = new MediaMuxer(outputPath,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
 
@@ -859,10 +892,19 @@ class VideoEncoderThread extends Thread {
         mVideoEncoder.stop();
         mVideoEncoder.release();
         mVideoEncoder = null;
+
+        mMediaMuxer.stop();
+        mMediaMuxer.release();
+        mMediaMuxer = null;
     }
 
     public Surface getVideoEncoderSurface() {
         return mSurface;
+    }
+
+    private static long computePresentationTimeNsec(int frameIndex) {
+        final long ONE_BILLION = 1000000;
+        return frameIndex * ONE_BILLION / 30;
     }
 }
 
