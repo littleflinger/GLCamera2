@@ -335,9 +335,11 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
                     updateSurface = false;
                 }
             }
+            GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
             compositeFrame(mEGLSurface);
             synchronized(mVideoEncoderEGLSurface) {
                 if (mVideoEncoderEGLSurface != EGL10.EGL_NO_SURFACE) {
+                    GLES20.glViewport(0, 0, 720, 1280);
                     compositeFrame(mVideoEncoderEGLSurface);
                 }
             }
@@ -870,7 +872,7 @@ class VideoEncoderThread extends Thread {
              */
             @Override
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                Log.d(TAG, "onOutputFormatChanged");
+                Log.d(TAG, "onOutputFormatChanged" +format);
                 mTrackIndex = mMediaMuxer.addTrack(format);
                 mMediaMuxer.start();
             }
