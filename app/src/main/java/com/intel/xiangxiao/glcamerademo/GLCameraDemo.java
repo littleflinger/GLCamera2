@@ -13,6 +13,7 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
+import android.media.MediaRecorder;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
@@ -56,6 +57,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     private CameraManager mCameraManager;
     private GLRenderThread mGLRenderThread;
     private VideoEncoderThread mVideoEncoderThread;
+    private VideoEncoder mVideoEncoder;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -177,23 +179,27 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     public void onClick(View v) {
         if (mStatus){
             mGLRenderThread.removeVideoEncoderSurface();
-            mVideoEncoderThread.stopVideoRecord();
+            /*mVideoEncoderThread.stopVideoRecord();
             try {
                 mVideoEncoderThread.join();
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
-            mVideoEncoderThread = null;
+            mVideoEncoderThread = null;*/
+            mVideoEncoder.stopVideoRecorder();
+            mVideoEncoder = null;
             Log.d(TAG, "onClick: true");
             mButton.setText("start");
-        } else {
+        } else {/*
             try {
                 mVideoEncoderThread = new VideoEncoderThread(720, 1280);
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            mVideoEncoderThread.start();
-            mGLRenderThread.setVideoEncoderSurface(mVideoEncoderThread.getVideoEncoderSurface());
+            mVideoEncoderThread.start();*/
+            mVideoEncoder = new VideoEncoder(720, 1280);
+            mGLRenderThread.setVideoEncoderSurface(mVideoEncoder.getVideoEncoderSurface());
+            mVideoEncoder.startVideoRecorder();
             Log.d(TAG, "onClick: false");
             mButton.setText("stop");
         }
@@ -907,6 +913,61 @@ class VideoEncoderThread extends Thread {
     private static long computePresentationTimeNsec(int frameIndex) {
         final long ONE_BILLION = 1000000;
         return frameIndex * ONE_BILLION / 30;
+    }
+}
+class VideoEncoder {
+    private static final String TAG = "VideoEncoder";
+    private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
+    public MediaRecorder mMediaRecorder;
+    private Surface mSurface;
+
+    public VideoEncoder(int width, int height) {
+        mMediaRecorder = new MediaRecorder();
+
+        Log.d(TAG, "external directory : " + OUTPUT_DIR.toString());
+        //String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        Log.d(TAG, "outputPath: " + outputPath);
+        mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        mMediaRecorder.setOutputFile(outputPath);
+        mMediaRecorder.setVideoEncodingBitRate(10000000);
+        mMediaRecorder.setVideoFrameRate(30);
+        //mMediaRecorder.setOrientationHint(180);
+        mMediaRecorder.setVideoSize(width, height);
+        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+        mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        try {
+            mMediaRecorder.prepare();
+        } catch (IOException e) {
+            Log.e(TAG, "MediaRecorder prepare failed!!!");
+            e.printStackTrace();
+        }
+
+        mSurface = mMediaRecorder.getSurface();
+    }
+
+    public Surface getVideoEncoderSurface() {
+        return mSurface;
+    }
+
+    public void startVideoRecorder() {
+        Log.d(TAG, "startVideoRecorder");
+        try {
+            mMediaRecorder.start();
+        } catch (IllegalStateException ex) {
+            Log.e(TAG, "start recording failed!");
+            ex.printStackTrace();
+        }
+    }
+
+    public void stopVideoRecorder() {
+        Log.d(TAG, "stopVideoRecorder");
+        mMediaRecorder.stop();
+        mMediaRecorder.reset();
+        mMediaRecorder.release();
+        mMediaRecorder = null;
     }
 }
 
