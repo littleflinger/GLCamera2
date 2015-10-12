@@ -13,6 +13,7 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
+import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
@@ -208,7 +209,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
 
 }
 
-class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableListener {
+class GLRenderThread extends Thread {
     private static final String TAG = "CLRenderThread";
 
     private static final int FLOAT_SIZE = 4;
@@ -265,9 +266,19 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             "#extension GL_OES_EGL_image_external : require     \n" +
             "precision mediump float;                           \n" +
             "varying vec2 vTextureCoord;                        \n" +
-            "uniform samplerExternalOES sTexture;               \n" +
+            "uniform int  uFlag;                                \n" +
+            "uniform samplerExternalOES sTexture0;              \n" +
+            "uniform samplerExternalOES sTexture1;              \n" +
             "void main() {                                      \n" +
-            "   gl_FragColor = texture2D(sTexture, vTextureCoord);\n" +
+            "   vec4 baseColor;                                 \n" +
+            "   vec4 topColor;                                  \n" +
+            "   baseColor = texture2D(sTexture0, vTextureCoord);\n" +
+            "   topColor = texture2D(sTexture1, vTextureCoord); \n" +
+            "   if(uFlag == 1){                                 \n" +
+            "       gl_FragColor = baseColor;                   \n" +
+            "   } else {                                        \n" +
+            "       gl_FragColor = topColor;                    \n" +
+            "   }                                               \n" +
             "}                                                  \n";
 
     private float[] mMPMatrix = new float[16];
@@ -282,6 +293,9 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private int muMPMatrixHandle;
     private int muSTMatrixHandle;
     private int muRatioHandle;
+    private int muFlagHandle;
+    private int msTexture0Handle;
+    private int msTexture1Handle;
 
     private EGL10 mEGL;
     private EGLDisplay mEGLDisplay;
@@ -289,11 +303,11 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private EGLContext mEGLContext;
     private EGLConfig mEGLConfig;
 
-    private SurfaceTexture currentWindowSurface, mSurface;
+    private SurfaceTexture currentWindowSurface, mCameraSurface, mVideoSurface;
     private int mTextureViewWidth, mTextureViewHeight;
-    private int mTextureID;
+    private int mTextureID0, mTextureID1;
     private int mProgram;
-    private boolean updateSurface = false;
+    private boolean updateCameraSurface = false, updateVideoSurface = false;
     private boolean isPreviewing = true;
 
     private static final int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
@@ -306,6 +320,9 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
     private String mCameraId;
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
+
+    private MediaPlayer mMediaPlayer;
+    private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
 
     public GLRenderThread(HandlerThread handlerThread, Handler handler, SurfaceTexture surface, int width, int height, CameraManager cameraManager) {
         mBackgroundThread = handlerThread;
@@ -335,10 +352,14 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         initOpenGLES2();
         while (isPreviewing) {
             synchronized (this) {
-                if (updateSurface) {
-                    mSurface.updateTexImage();
-                    mSurface.getTransformMatrix(mSTMatrix);
-                    updateSurface = false;
+                if (updateCameraSurface) {
+                    mCameraSurface.updateTexImage();
+                    mCameraSurface.getTransformMatrix(mSTMatrix);
+                    updateCameraSurface = false;
+                }
+                if (updateVideoSurface) {
+                    mVideoSurface.updateTexImage();
+                    updateVideoSurface = false;
                 }
             }
             GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
@@ -376,6 +397,12 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             ex.printStackTrace();
         }
 
+        if (mMediaPlayer != null) {
+            mMediaPlayer.stop();
+            mMediaPlayer.release();
+            mMediaPlayer = null;
+        }
+
         isPreviewing = false;
     }
 
@@ -397,13 +424,6 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             }
         }
     }
-
-    @Override
-    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-        Log.d(TAG, "onFrameAvailable");
-        updateSurface = true;
-    }
-
 
     private void initEGL(){
         Log.d(TAG, "start initialize EGL");
@@ -515,22 +535,59 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         if (muRatioHandle == -1) {
             throw new RuntimeException("Could not get uniform location for uRatio");
         }
+        muFlagHandle = GLES20.glGetUniformLocation(mProgram, "uFlag");
+        checkGLError("glGetUniformLocation uFlag");
+        if (muFlagHandle == -1) {
+            throw new RuntimeException("Could not get uniform location for uFlag");
+        }
+        msTexture0Handle = GLES20.glGetUniformLocation(mProgram, "sTexture0");
+        checkGLError("glGetUniformLocation sTexture0");
+        if (msTexture0Handle == -1) {
+            throw new RuntimeException("Could not get uniform location for sTexture0");
+        }
+        msTexture1Handle = GLES20.glGetUniformLocation(mProgram, "sTexture1");
+        checkGLError("glGetUniformLocation sTexture1");
+        if (msTexture1Handle == -1) {
+            throw new RuntimeException("Could not get uniform location for sTexture1");
+        }
 
-        int[] textures = new int[1];
-        GLES20.glGenTextures(1, textures, 0);
-        mTextureID = textures[0];
-        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
-        checkGLError("glBindTexture mTextureID");
-
+        int[] textures = new int[2];
+        GLES20.glGenTextures(2, textures, 0);
+        mTextureID0 = textures[0];
+        mTextureID1 = textures[1];
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID0);
+        checkGLError("glBindTexture mTextureID0");
         GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
         GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-
-        mSurface = new SurfaceTexture(mTextureID);
-        mSurface.setOnFrameAvailableListener(this);
-
+        mCameraSurface = new SurfaceTexture(mTextureID0);
+        mCameraSurface.setOnFrameAvailableListener(
+                new SurfaceTexture.OnFrameAvailableListener() {
+                    @Override
+                    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                        updateCameraSurface = true;
+                    }
+                }
+        );
         initCamera2();
+
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID1);
+        checkGLError("glBindTexture mTextureID1");
+        GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        mVideoSurface = new SurfaceTexture(mTextureID1);
+        mVideoSurface.setOnFrameAvailableListener(
+                new SurfaceTexture.OnFrameAvailableListener() {
+                    @Override
+                    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                        updateVideoSurface = true;
+                    }
+                }
+        );
+        initMediaPlayer();
 
         /* set the LookAt's up direction to negative, since
          * the textureView orientation is upside-down
@@ -557,9 +614,9 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
                     StreamConfigurationMap info = cameraCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
                     Log.d(TAG, "mTextureView size: " + mTextureViewWidth + "x" + mTextureViewHeight);
-                    Size optimalSize = chooseBigEnoughSize(info.getOutputSizes(mSurface.getClass()),mTextureViewWidth, mTextureViewHeight);
+                    Size optimalSize = chooseBigEnoughSize(info.getOutputSizes(mCameraSurface.getClass()),mTextureViewWidth, mTextureViewHeight);
                     Log.d(TAG, "preview size: " + optimalSize);
-                    mSurface.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
+                    mCameraSurface.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
                     mRatio = (float)optimalSize.getHeight() / optimalSize.getWidth();
 
                     mCameraId = cameraid;
@@ -572,6 +629,32 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             ex.printStackTrace();
         }
     }
+
+    private void initMediaPlayer() {
+        Log.d(TAG, "initMediaPlayer");
+
+        mMediaPlayer = new MediaPlayer();
+
+        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        try {
+            mMediaPlayer.setDataSource(outputPath);
+            mMediaPlayer.setSurface(new Surface(mVideoSurface));
+            mMediaPlayer.prepareAsync();
+            mMediaPlayer.setOnPreparedListener(
+                    new MediaPlayer.OnPreparedListener() {
+                        @Override
+                        public void onPrepared(MediaPlayer mp) {
+                            if (mp != null) {
+                                mp.start();
+                            }
+                        }
+                    }
+            );
+            mMediaPlayer.setLooping(true);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
     private void compositeFrame(EGLSurface eglSurface) {
         mEGL.eglMakeCurrent(mEGLDisplay, eglSurface, eglSurface, mEGLContext);
         //checkEGLError("eglMakeCurrent");
@@ -581,7 +664,8 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         checkGLError("glUseProgram");
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID0);
+        GLES20.glUniform1i(msTexture0Handle, 0);
 
         mBigTriangleVertices.position(TRIANGLE_VERTICES_POS_OFFSET);
         GLES20.glVertexAttribPointer(maPositionHandle, 3, GLES20.GL_FLOAT, false,
@@ -603,12 +687,16 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
         GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
         GLES20.glUniform1f(muRatioHandle, mRatio);
+        GLES20.glUniform1i(muFlagHandle, 1);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        checkGLError("glDrawArrays");
+        checkGLError("glDrawArrays0");
 
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID);
+        /*GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID0);*/
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID1);
+        GLES20.glUniform1i(msTexture1Handle, 1);
 
         mSmallTriangleVertices.position(TRIANGLE_VERTICES_POS_OFFSET);
         GLES20.glVertexAttribPointer(maPositionHandle, 3, GLES20.GL_FLOAT, false,
@@ -624,8 +712,10 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
         GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
         checkGLError("glEnableVertexAttribArray maTextureHandle");
 
+        GLES20.glUniform1i(muFlagHandle, 0);
+
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        checkGLError("glDrawArrays");
+        checkGLError("glDrawArrays1");
 
         if (! mEGL.eglSwapBuffers(mEGLDisplay, eglSurface)) {
             Log.e(TAG, "Cannot swap buffers!");
@@ -675,7 +765,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
             mCameraDevice = camera;
             try {
                 List<Surface> outputSurfaces = new ArrayList<>();
-                outputSurfaces.add(new Surface(mSurface));
+                outputSurfaces.add(new Surface(mCameraSurface));
                 mCameraDevice.createCaptureSession(outputSurfaces, mCaptureStateCallback, mBackgroundHandler);
             } catch (CameraAccessException ex) {
                 Log.e(TAG, "Fail to create a camera capture session.");
@@ -702,7 +792,7 @@ class GLRenderThread extends Thread implements SurfaceTexture.OnFrameAvailableLi
 
             try {
                 CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                requestBuilder.addTarget(new Surface(mSurface));
+                requestBuilder.addTarget(new Surface(mCameraSurface));
 
                 try {
                     mCameraCaptureSession.setRepeatingRequest(requestBuilder.build(), null, mBackgroundHandler);
@@ -926,7 +1016,7 @@ class VideoEncoder {
 
         Log.d(TAG, "external directory : " + OUTPUT_DIR.toString());
         //String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        String outputPath = new File(OUTPUT_DIR, "test0.mp4").toString();
         Log.d(TAG, "outputPath: " + outputPath);
         mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
