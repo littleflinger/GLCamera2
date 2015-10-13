@@ -115,14 +115,6 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         Log.d(TAG, "onDestroy");
     }
 
-    /**
-     * Invoked when a {@link TextureView}'s SurfaceTexture is ready for use.
-     *
-     * @param surface The surface returned by
-     *                {@link TextureView#getSurfaceTexture()}
-     * @param width   The width of the surface
-     * @param height  The height of the surface
-     */
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
         Log.d(TAG, "onSurfaceTextureAvailable");
@@ -134,48 +126,21 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         mGLRenderThread.start();
     }
 
-    /**
-     * Invoked when the {@link SurfaceTexture}'s buffers size changed.
-     *
-     * @param surface The surface returned by
-     *                {@link TextureView#getSurfaceTexture()}
-     * @param width   The new width of the surface
-     * @param height  The new height of the surface
-     */
     @Override
     public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
 
     }
 
-    /**
-     * Invoked when the specified {@link SurfaceTexture} is about to be destroyed.
-     * If returns true, no rendering should happen inside the surface texture after this method
-     * is invoked. If returns false, the client needs to call {@link SurfaceTexture#release()}.
-     * Most applications should return true.
-     *
-     * @param surface The surface about to be destroyed
-     */
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
         return false;
     }
 
-    /**
-     * Invoked when the specified {@link SurfaceTexture} is updated through
-     * {@link SurfaceTexture#updateTexImage()}.
-     *
-     * @param surface The surface just updated
-     */
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
         //Log.d(TAG, "onSurfaceTextureUpdated");
     }
 
-    /**
-     * Called when a view has been clicked.
-     *
-     * @param v The view that was clicked.
-     */
     @Override
     public void onClick(View v) {
         if (mStatus){
@@ -216,20 +181,7 @@ class GLRenderThread extends Thread {
     private static final int TRIANGLE_VERTICES_STRIDE = 5 * FLOAT_SIZE;
     private static final int TRIANGLE_VERTICES_POS_OFFSET = 0;
     private static final int TRIANGLE_VERTICES_UV_OFFSET = 3;
-/*
-    private final float[] mBigTriangleVerticesData = {
-            -4.5f, -8.0f, 0, 0.f, 0.f,
-             4.5f, -8.0f, 0, 1.f, 0.f,
-            -4.5f,  8.0f, 0, 0.f, 1.f,
-             4.5f,  8.0f, 0, 1.f, 1.f
-    };
-    private final float[] mSmallTriangleVerticesData = {
-            2.25f,  4.0f, 0, 0.f, 0.f,
-             4.5f,  4.0f, 0, 1.f, 0.f,
-            2.25f,  8.0f, 0, 0.f, 1.f,
-             4.5f,  8.0f, 0, 1.f, 1.f
-    };
-*/
+
     private final float[] mBigTriangleVerticesData = {
             // X, Y, Z, U, V
             -1.0f, -1.0f, 0, 0.f, 0.f,
@@ -321,6 +273,8 @@ class GLRenderThread extends Thread {
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
 
+    private final String lock0 = "true";
+    private final String lock1 = "true";
     private MediaPlayer mMediaPlayer;
     private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
 
@@ -351,13 +305,17 @@ class GLRenderThread extends Thread {
         initEGL();
         initOpenGLES2();
         while (isPreviewing) {
-            synchronized (this) {
+            synchronized (lock0) {
                 if (updateCameraSurface) {
+                    Log.d(TAG, "camera preview update.");
                     mCameraSurface.updateTexImage();
                     mCameraSurface.getTransformMatrix(mSTMatrix);
                     updateCameraSurface = false;
                 }
+            }
+            synchronized (lock1) {
                 if (updateVideoSurface) {
+                    Log.d(TAG, "video playback update.");
                     mVideoSurface.updateTexImage();
                     updateVideoSurface = false;
                 }
@@ -565,8 +523,11 @@ class GLRenderThread extends Thread {
         mCameraSurface.setOnFrameAvailableListener(
                 new SurfaceTexture.OnFrameAvailableListener() {
                     @Override
-                    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-                        updateCameraSurface = true;
+                    public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                        synchronized (lock0) {
+                            updateCameraSurface = true;
+                            //Log.d(TAG, "CameraFrameAvailable!");
+                        }
                     }
                 }
         );
@@ -582,8 +543,11 @@ class GLRenderThread extends Thread {
         mVideoSurface.setOnFrameAvailableListener(
                 new SurfaceTexture.OnFrameAvailableListener() {
                     @Override
-                    synchronized public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-                        updateVideoSurface = true;
+                    public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                        synchronized (lock1) {
+                            updateVideoSurface = true;
+                            //Log.d(TAG, "VideoFrameAvailable!");
+                        }
                     }
                 }
         );
@@ -656,6 +620,7 @@ class GLRenderThread extends Thread {
         }
     }
     private void compositeFrame(EGLSurface eglSurface) {
+        //Log.d(TAG, "frame update.");
         mEGL.eglMakeCurrent(mEGLDisplay, eglSurface, eglSurface, mEGLContext);
         //checkEGLError("eglMakeCurrent");
 
@@ -731,27 +696,6 @@ class GLRenderThread extends Thread {
     }
 
     static class CompareSizesByArea implements Comparator<Size> {
-
-        /**
-         * Compares the two specified objects to determine their relative ordering. The ordering
-         * implied by the return value of this method for all possible pairs of
-         * {@code (lhs, rhs)} should form an <i>equivalence relation</i>.
-         * This means that
-         * <ul>
-         * <li>{@code compare(a,a)} returns zero for all {@code a}</li>
-         * <li>the sign of {@code compare(a,b)} must be the opposite of the sign of {@code
-         * compare(b,a)} for all pairs of (a,b)</li>
-         * <li>From {@code compare(a,b) > 0} and {@code compare(b,c) > 0} it must
-         * follow {@code compare(a,c) > 0} for all possible combinations of {@code
-         * (a,b,c)}</li>
-         * </ul>
-         *
-         * @param lhs an {@code Object}.
-         * @param rhs a second {@code Object} to compare with {@code lhs}.
-         * @return an integer < 0 if {@code lhs} is less than {@code rhs}, 0 if they are
-         * equal, and > 0 if {@code lhs} is greater than {@code rhs}.
-         * @throws ClassCastException if objects are not of the correct type.
-         */
         @Override
         public int compare(Size lhs, Size rhs) {
             return Long.signum((long)lhs.getWidth()*lhs.getHeight()-(long)rhs.getWidth()*rhs.getHeight());
@@ -820,14 +764,6 @@ class GLRenderThread extends Thread {
         }
     };
 
-    /**
-     * Given {@code choices} of {@code Size}s supported by a camera, chooses the smallest one whose
-     * width and height are at least as large as the respective requested values.
-     * @param choices The list of sizes that the camera supports for the intended output class
-     * @param width The minimum desired width
-     * @param height The minimum desired height
-     * @return The optimal {@code Size}, or an arbitrary one if none were big enough
-     */
     static Size chooseBigEnoughSize(Size[] choices, int width, int height) {
         // Collect the supported resolutions that are at least as big as the preview Surface
         List<Size> bigEnough = new ArrayList<>();
@@ -903,24 +839,12 @@ class VideoEncoderThread extends Thread {
         mMediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         mVideoEncoder = MediaCodec.createEncoderByType("video/avc");
         mVideoEncoder.setCallback(new MediaCodec.Callback() {
-            /**
-             * Called when an input buffer becomes available.
-             *
-             * @param codec The MediaCodec object.
-             * @param index The index of the available input buffer.
-             */
+
             @Override
             public void onInputBufferAvailable(MediaCodec codec, int index) {
                 Log.d(TAG, "onInputBufferAvailable");
             }
 
-            /**
-             * Called when an output buffer becomes available.
-             *
-             * @param codec The MediaCodec object.
-             * @param index The index of the available output buffer.
-             * @param info  Info regarding the available output buffer {@link MediaCodec.BufferInfo}.
-             */
             @Override
             public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
                 Log.d(TAG, "onOutputBufferAvailable");
@@ -942,12 +866,6 @@ class VideoEncoderThread extends Thread {
                 }
             }
 
-            /**
-             * Called when the MediaCodec encountered an error
-             *
-             * @param codec The MediaCodec object.
-             * @param e     The {@link MediaCodec.CodecException} object describing the error.
-             */
             @Override
             public void onError(MediaCodec codec, MediaCodec.CodecException e) {
                 Log.e(TAG, "onError");
@@ -960,15 +878,9 @@ class VideoEncoderThread extends Thread {
                 e.printStackTrace();
             }
 
-            /**
-             * Called when the output format has changed
-             *
-             * @param codec  The MediaCodec object.
-             * @param format The new output format.
-             */
             @Override
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                Log.d(TAG, "onOutputFormatChanged" +format);
+                Log.d(TAG, "onOutputFormatChanged" + format);
                 mTrackIndex = mMediaMuxer.addTrack(format);
                 mMediaMuxer.start();
             }
@@ -1060,9 +972,3 @@ class VideoEncoder {
         mMediaRecorder = null;
     }
 }
-
-
-
-
-
-
