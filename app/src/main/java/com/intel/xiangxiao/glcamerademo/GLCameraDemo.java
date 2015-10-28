@@ -1,6 +1,7 @@
 package com.intel.xiangxiao.glcamerademo;
 
 import android.app.Activity;
+import android.content.Context;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -22,22 +23,29 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Message;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 
 import javax.microedition.khronos.egl.EGL10;
 import javax.microedition.khronos.egl.EGLConfig;
@@ -52,6 +60,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     private Button mButton;
     private boolean mStatus;
     private int mWidth, mHeight;
+    private Context mContext;
 
     private HandlerThread mBackgroundThread;
     private Handler mBackgroundHandler;
@@ -60,9 +69,42 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     private VideoEncoderThread mVideoEncoderThread;
     private VideoEncoder mVideoEncoder;
 
+    final Handler mHandler = new Handler() {
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+                case 1:
+                    Log.d(TAG, "The Camera frame rate is: " + mGLRenderThread.mCameraPreviewFrameRate);
+                    Log.d(TAG, "The Video frame rate is: " + mGLRenderThread.mVideoPlaybackFrameRate);
+                    Log.d(TAG, "The GLRender frame rate is: " + mGLRenderThread.mGLRenderFrameRate);
+                    mGLRenderThread.mCameraPreviewFrameRate = 0;
+                    mGLRenderThread.mVideoPlaybackFrameRate = 0;
+                    mGLRenderThread.mGLRenderFrameRate = 0;
+                    break;
+                case 2:
+                    Toast.makeText(mContext, "Please use system Camera app record a video firstly", Toast.LENGTH_LONG).show();
+                    break;
+                default:
+                    break;
+            }
+            super.handleMessage(msg);
+        }
+    };
+
+    Timer timer = new Timer();
+    TimerTask timerTask = new TimerTask() {
+        @Override
+        public void run() {
+            Message message = new Message();
+            message.what = 1;
+            mHandler.sendMessage(message);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mContext = getApplicationContext();
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.main_activity_view);
         mTextureView = (TextureView)findViewById(R.id.camera_view);
         //mTextureView.setRotation(180.0f);
@@ -112,6 +154,10 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (timer != null) {
+            timer.cancel();
+            timer = null;
+        }
         Log.d(TAG, "onDestroy");
     }
 
@@ -121,9 +167,10 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         //initCamera2(surface, width, height);
         mWidth = width;
         mHeight = height;
-        mGLRenderThread = new GLRenderThread(mBackgroundThread, mBackgroundHandler,
+        mGLRenderThread = new GLRenderThread(mContext, mHandler, mBackgroundThread, mBackgroundHandler,
                 surface, width, height, mCameraManager);
         mGLRenderThread.start();
+        timer.schedule(timerTask, 2000, 1000);
     }
 
     @Override
@@ -171,7 +218,6 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         }
         mStatus = !mStatus;
     }
-
 }
 
 class GLRenderThread extends Thread {
@@ -257,6 +303,7 @@ class GLRenderThread extends Thread {
 
     private SurfaceTexture currentWindowSurface, mCameraSurface, mVideoSurface;
     private int mTextureViewWidth, mTextureViewHeight;
+    private int[] textures = new int[2];
     private int mTextureID0, mTextureID1;
     private int mProgram;
     private boolean updateCameraSurface = false, updateVideoSurface = false;
@@ -278,9 +325,15 @@ class GLRenderThread extends Thread {
     private MediaPlayer mMediaPlayer;
     private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
 
-    public GLRenderThread(HandlerThread handlerThread, Handler handler, SurfaceTexture surface, int width, int height, CameraManager cameraManager) {
+    public int mCameraPreviewFrameRate, mVideoPlaybackFrameRate, mGLRenderFrameRate;
+
+    private Context mContext;
+    private Handler mMainThreadHandler;
+    public GLRenderThread(Context context, Handler mainThreadHandler, HandlerThread handlerThread, Handler backgroundHandler, SurfaceTexture surface, int width, int height, CameraManager cameraManager) {
+        mContext = context;
+        mMainThreadHandler = mainThreadHandler;
         mBackgroundThread = handlerThread;
-        mBackgroundHandler = handler;
+        mBackgroundHandler = backgroundHandler;
         currentWindowSurface = surface;
         mTextureViewWidth = width;
         mTextureViewHeight = height;
@@ -298,6 +351,10 @@ class GLRenderThread extends Thread {
         Matrix.setIdentityM(mMMatrix, 0);
 
         mVideoEncoderEGLSurface = EGL10.EGL_NO_SURFACE;
+
+        mCameraPreviewFrameRate = 0;
+        mVideoPlaybackFrameRate = 0;
+        mGLRenderFrameRate = 0;
     }
 
     @Override
@@ -307,20 +364,23 @@ class GLRenderThread extends Thread {
         while (isPreviewing) {
             synchronized (lock0) {
                 if (updateCameraSurface) {
-                    Log.d(TAG, "camera preview update.");
+//                    Log.d(TAG, "camera preview update.");
                     mCameraSurface.updateTexImage();
                     mCameraSurface.getTransformMatrix(mSTMatrix);
                     updateCameraSurface = false;
+                    mCameraPreviewFrameRate++;
                 }
             }
             synchronized (lock1) {
                 if (updateVideoSurface) {
-                    Log.d(TAG, "video playback update.");
+//                    Log.d(TAG, "video playback update.");
                     mVideoSurface.updateTexImage();
                     updateVideoSurface = false;
+                    mVideoPlaybackFrameRate++;
                 }
             }
             GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
+            mGLRenderFrameRate++;
             compositeFrame(mEGLSurface);
             synchronized(mVideoEncoderEGLSurface) {
                 if (mVideoEncoderEGLSurface != EGL10.EGL_NO_SURFACE) {
@@ -509,7 +569,6 @@ class GLRenderThread extends Thread {
             throw new RuntimeException("Could not get uniform location for sTexture1");
         }
 
-        int[] textures = new int[2];
         GLES20.glGenTextures(2, textures, 0);
         mTextureID0 = textures[0];
         mTextureID1 = textures[1];
@@ -553,17 +612,23 @@ class GLRenderThread extends Thread {
         );
         initMediaPlayer();
 
+        //Viewport Transform
+        GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
+        //Projection Transform
+        Matrix.frustumM(mProjMatrix, 0, -mRatio, mRatio, -1.0f, 1.0f, 1.0f, 300.0f);
         /* set the LookAt's up direction to negative, since
          * the textureView orientation is upside-down
          */
-        Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f);
-
-        GLES20.glViewport(0, 0, mTextureViewWidth, mTextureViewHeight);
-        Matrix.frustumM(mProjMatrix, 0, -mRatio, mRatio, -1.0f, 1.0f, 1.0f, 300.0f);
+        //Model-View Transform
+        Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
 
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
+        GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
+
+        GLES20.glUseProgram(mProgram);
+        checkGLError("glUseProgram");
     }
 
     private void initCamera2() {
@@ -599,7 +664,29 @@ class GLRenderThread extends Thread {
 
         mMediaPlayer = new MediaPlayer();
 
-        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+        String outputPath = null;
+        String Extention = ".mp4";
+        File[] files = new File(OUTPUT_DIR.toString() + "/DCIM/Camera/").listFiles();
+        for (File file : files) {
+            if (file.isFile()) {
+                if (file.getPath().substring(file.getPath().length()
+                        -Extention.length()).equals(Extention)) {
+                    outputPath = file.getAbsolutePath();
+                    break;
+                }
+            }
+        }
+        if (outputPath == null) {
+            Log.d(TAG, "There's no video file exist");
+            Message message = new Message();
+            message.what = 2;
+            mMainThreadHandler.sendMessage(message);
+            return;
+        }
+        Log.d(TAG, "outputPath is: " + outputPath);
+//        String outputPath = new File(OUTPUT_DIR, "test.mp4").toString();
+
+
         try {
             mMediaPlayer.setDataSource(outputPath);
             mMediaPlayer.setSurface(new Surface(mVideoSurface));
@@ -620,13 +707,8 @@ class GLRenderThread extends Thread {
         }
     }
     private void compositeFrame(EGLSurface eglSurface) {
-        //Log.d(TAG, "frame update.");
         mEGL.eglMakeCurrent(mEGLDisplay, eglSurface, eglSurface, mEGLContext);
         //checkEGLError("eglMakeCurrent");
-
-        GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
-        GLES20.glUseProgram(mProgram);
-        checkGLError("glUseProgram");
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID0);
@@ -689,6 +771,8 @@ class GLRenderThread extends Thread {
     }
 
     private void termGL() {
+        GLES20.glDeleteTextures(2, textures, 0);
+        GLES20.glDeleteProgram(mProgram);
         mEGL.eglDestroyContext(mEGLDisplay, mEGLContext);
         mEGL.eglDestroySurface(mEGLDisplay, mEGLSurface);
         mEGLContext = EGL10.EGL_NO_CONTEXT;
@@ -735,7 +819,7 @@ class GLRenderThread extends Thread {
             mCameraCaptureSession = session;
 
             try {
-                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                CaptureRequest.Builder requestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                 requestBuilder.addTarget(new Surface(mCameraSurface));
 
                 try {
@@ -927,8 +1011,8 @@ class VideoEncoder {
         mMediaRecorder = new MediaRecorder();
 
         Log.d(TAG, "external directory : " + OUTPUT_DIR.toString());
-        //String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        String outputPath = new File(OUTPUT_DIR, "test0.mp4").toString();
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+        String outputPath = new File(OUTPUT_DIR, "VID_" + timeStamp + ".mp4").toString();
         Log.d(TAG, "outputPath: " + outputPath);
         mMediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
