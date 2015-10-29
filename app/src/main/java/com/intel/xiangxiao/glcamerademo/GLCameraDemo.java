@@ -2,6 +2,7 @@ package com.intel.xiangxiao.glcamerademo;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -105,6 +106,7 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         super.onCreate(savedInstanceState);
         mContext = getApplicationContext();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         setContentView(R.layout.main_activity_view);
         mTextureView = (TextureView)findViewById(R.id.camera_view);
         //mTextureView.setRotation(180.0f);
