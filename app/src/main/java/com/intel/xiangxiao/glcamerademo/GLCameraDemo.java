@@ -129,6 +129,10 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
             }
             mVideoEncoderThread = null;
         }
+        if (timer != null) {
+            timer.cancel();
+            timer = null;
+        }
     }
 
     @Override
@@ -154,10 +158,6 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (timer != null) {
-            timer.cancel();
-            timer = null;
-        }
         Log.d(TAG, "onDestroy");
     }
 
@@ -622,13 +622,18 @@ class GLRenderThread extends Thread {
         //Model-View Transform
         Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
 
+        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
+        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
+
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
-        GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 
         GLES20.glUseProgram(mProgram);
         checkGLError("glUseProgram");
+
+        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
     }
 
     private void initCamera2() {
@@ -710,6 +715,9 @@ class GLRenderThread extends Thread {
         mEGL.eglMakeCurrent(mEGLDisplay, eglSurface, eglSurface, mEGLContext);
         //checkEGLError("eglMakeCurrent");
 
+        GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
+        GLES20.glUniform1f(muRatioHandle, mRatio);
+
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, mTextureID0);
         GLES20.glUniform1i(msTexture0Handle, 0);
@@ -728,12 +736,6 @@ class GLRenderThread extends Thread {
         GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
         checkGLError("glEnableVertexAttribArray maTextureHandle");
 
-        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
-        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
-
-        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
-        GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
-        GLES20.glUniform1f(muRatioHandle, mRatio);
         GLES20.glUniform1i(muFlagHandle, 1);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
