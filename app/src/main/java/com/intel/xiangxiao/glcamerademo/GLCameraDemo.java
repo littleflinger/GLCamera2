@@ -3,6 +3,7 @@ package com.intel.xiangxiao.glcamerademo;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
+import android.graphics.Point;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -27,6 +28,7 @@ import android.os.HandlerThread;
 import android.os.Message;
 import android.util.Log;
 import android.util.Size;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
@@ -220,11 +222,74 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
         }
         mStatus = !mStatus;
     }
+
+    private float mDownX, mDownY, mMoveX, mMoveY, mMoveFinalX = 0, mMoveFinalY = 0;
+    private int[] location = new int[2];
+    private boolean isFocusCenter = false;
+    private Point mPoint;
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+
+        switch (event.getAction()) {
+            case MotionEvent.ACTION_DOWN:
+                mDownX = event.getX();
+                mDownY = event.getY();
+                Log.d(TAG, "[TouchEvent] onDown-> X: " + mDownX + ", Y: " + mDownY);
+                mTextureView.getLocationOnScreen(location);
+                mPoint = mGLRenderThread.getmSmallTriangleCenter();
+                if (mDownX >= (mPoint.x) && mDownX <= (mPoint.x + mTextureView.getWidth()/4) &&
+                        mDownY <= (mPoint.y) && mDownY >= (mPoint.y - mTextureView.getHeight()/4)) {
+                    isFocusCenter = true;
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (mGLRenderThread != null) {
+                    if (isFocusCenter) {
+                        float mThisX = event.getX();
+                        float mThisY = event.getY();
+
+                        mMoveX = mThisX - mDownX;
+                        mMoveY = mThisY - mDownY;
+                        if (mPoint.x + mMoveX > mTextureView.getWidth()/4*3) {
+                            mMoveX = mTextureView.getWidth()/4*3 - mPoint.x;
+                        }
+                        if (mPoint.x + mMoveX < 0) {
+                            mMoveX = 0 - mPoint.x;
+                        }
+                        if (mPoint.y + mMoveY > mTextureView.getHeight()+location[1]) {
+                            mMoveY = mTextureView.getHeight()+location[1] - mPoint.y;
+                        }
+                        if (mPoint.y + mMoveY < mTextureView.getHeight()/4+location[1]) {
+                            mMoveY = mTextureView.getHeight()/4+location[1] - mPoint.y;
+                        }
+
+                        mGLRenderThread.setmTransplateX((mMoveFinalX + mMoveX) / 1280 * 2);
+                        mGLRenderThread.setmTransplateY(-((mMoveFinalY + mMoveY) / mTextureView.getHeight() * 2));
+                    }
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+                if (isFocusCenter) {
+                    Log.d(TAG, "[TouchEvent] onUp-> X: " + event.getX() + ", Y: " + event.getY());
+                    mMoveFinalX += mMoveX;
+                    mMoveFinalY += mMoveY;
+                    Log.d(TAG, "[TouchEvent] mMoveFinal-> X: " + mMoveFinalX + ", Y: " + mMoveFinalY);
+                    mPoint.set((int) mMoveX + mPoint.x, (int) mMoveY + mPoint.y);
+                    mGLRenderThread.setmSmallTriangleCenter(mPoint);
+                    isFocusCenter = false;
+                }
+                break;
+        }
+        return super.onTouchEvent(event);
+    }
 }
 
 class GLRenderThread extends Thread {
     private static final String TAG = "CLRenderThread";
 
+    private Point mSmallTriangleCenter;
+    private float mTransplateX = 0;
+    private float mTransplateY = 0;
     private static final int FLOAT_SIZE = 4;
     private static final int TRIANGLE_VERTICES_STRIDE = 5 * FLOAT_SIZE;
     private static final int TRIANGLE_VERTICES_POS_OFFSET = 0;
@@ -239,10 +304,10 @@ class GLRenderThread extends Thread {
     };
     private final float[] mSmallTriangleVerticesData = {
             // X, Y, Z, U, V
-            -1.0f, -1.0f, 0, 0.f, 0.f,
-             0.0f, -1.0f, 0, 1.f, 0.f,
-            -1.0f,  0.0f, 0, 0.f, 1.f,
-             0.0f,  0.0f, 0, 1.f, 1.f,
+            0.5f, 0.5f, 0, 0.f, 0.f,
+            1.0f, 0.5f, 0, 1.f, 0.f,
+            0.5f, 1.0f, 0, 0.f, 1.f,
+            1.0f, 1.0f, 0, 1.f, 1.f,
     };
 
     private FloatBuffer mBigTriangleVertices;
@@ -349,6 +414,7 @@ class GLRenderThread extends Thread {
                 * FLOAT_SIZE).order(ByteOrder.nativeOrder()).asFloatBuffer();
         mSmallTriangleVertices.put(mSmallTriangleVerticesData).position(0);
 
+        mSmallTriangleCenter = new Point(mTextureViewWidth/4*3, mTextureViewHeight/4 + 122);
         Matrix.setIdentityM(mSTMatrix, 0);
         Matrix.setIdentityM(mMMatrix, 0);
 
@@ -392,6 +458,22 @@ class GLRenderThread extends Thread {
             }
         }
         termGL();
+    }
+
+    public Point getmSmallTriangleCenter() {
+        return mSmallTriangleCenter;
+    }
+
+    public void setmSmallTriangleCenter(Point point) {
+        mSmallTriangleCenter = point;
+    }
+
+    public void setmTransplateX(float x) {
+        mTransplateX = x;
+    }
+
+    public void setmTransplateY(float y) {
+        mTransplateY = y;
     }
 
     public void onPause() {
@@ -624,9 +706,6 @@ class GLRenderThread extends Thread {
         //Model-View Transform
         Matrix.setLookAtM(mVMatrix, 0, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
 
-        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
-        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
-
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.643f, 0.776f, 0.223f, 1.0f);
@@ -634,8 +713,6 @@ class GLRenderThread extends Thread {
 
         GLES20.glUseProgram(mProgram);
         checkGLError("glUseProgram");
-
-        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
     }
 
     private void initCamera2() {
@@ -738,6 +815,10 @@ class GLRenderThread extends Thread {
         GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
         checkGLError("glEnableVertexAttribArray maTextureHandle");
 
+        Matrix.setIdentityM(mMMatrix, 0);
+        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
+        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
+        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
         GLES20.glUniform1i(muFlagHandle, 1);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
@@ -763,6 +844,11 @@ class GLRenderThread extends Thread {
         GLES20.glEnableVertexAttribArray(maTextureCoordHandle);
         checkGLError("glEnableVertexAttribArray maTextureHandle");
 
+        Matrix.translateM(mMMatrix, 0, mTransplateX, mTransplateY, 0.0f);
+        //Matrix.translateM(mMMatrix, 0, 0, -1.5f, 0.0f);
+        Matrix.multiplyMM(mMPMatrix, 0, mVMatrix, 0, mMMatrix, 0);
+        Matrix.multiplyMM(mMPMatrix, 0, mProjMatrix, 0, mMPMatrix, 0);
+        GLES20.glUniformMatrix4fv(muMPMatrixHandle, 1, false, mMPMatrix, 0);
         GLES20.glUniform1i(muFlagHandle, 0);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
