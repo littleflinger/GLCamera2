@@ -225,8 +225,9 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
 
     private float mDownX, mDownY, mMoveX, mMoveY, mMoveFinalX = 0, mMoveFinalY = 0;
     private int[] location = new int[2];
-    private boolean isFocusCenter = false;
+    private boolean isFocusCenter = false, isFocusCorner = false;
     private Point mPoint;
+    private TopWindow mTopWindow;
     @Override
     public boolean onTouchEvent(MotionEvent event) {
 
@@ -236,31 +237,44 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
                 mDownY = event.getY();
                 Log.d(TAG, "[TouchEvent] onDown-> X: " + mDownX + ", Y: " + mDownY);
                 mTextureView.getLocationOnScreen(location);
-                mPoint = mGLRenderThread.getmSmallTriangleCenter();
-                if (mDownX >= (mPoint.x) && mDownX <= (mPoint.x + mTextureView.getWidth()/4) &&
-                        mDownY <= (mPoint.y) && mDownY >= (mPoint.y - mTextureView.getHeight()/4)) {
+                mTopWindow = mGLRenderThread.getmCurWindowPos();
+                mPoint = mTopWindow.getLocation();
+                if (mDownX >= (mPoint.x - mTopWindow.winWidth/2 - 5) && mDownX <= (mPoint.x - mTopWindow.winWidth/2 + 5) &&
+                        mDownY <= (mPoint.y + mTopWindow.winHeight/2 + 5) && mDownY >= (mPoint.y + mTopWindow.winHeight/2 - 5)) {
+                    isFocusCorner = true;
+                    Log.d(TAG, "[onTouchEvent] Focus Corner.");
+                    break;
+                }
+                if (mDownX >= (mPoint.x - mTopWindow.winWidth/2) && mDownX <= (mPoint.x + mTopWindow.winWidth/2) &&
+                        mDownY <= (mPoint.y + mTopWindow.winHeight/2) && mDownY >= (mPoint.y - mTopWindow.winHeight/2)) {
                     isFocusCenter = true;
+                    Log.d(TAG, "[onTouchEvent] Focus Center.");
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (mGLRenderThread != null) {
-                    if (isFocusCenter) {
-                        float mThisX = event.getX();
-                        float mThisY = event.getY();
+                    float mThisX = event.getX();
+                    float mThisY = event.getY();
+                    if (isFocusCorner) {
+                        mMoveX = mThisX - mDownX;
+                        mMoveY = mMoveX * 16 / 9;
 
+
+                    }
+                    if (isFocusCenter) {
                         mMoveX = mThisX - mDownX;
                         mMoveY = mThisY - mDownY;
-                        if (mPoint.x + mMoveX > mTextureView.getWidth()/4*3) {
-                            mMoveX = mTextureView.getWidth()/4*3 - mPoint.x;
+                        if (mPoint.x + mMoveX > (mTextureView.getWidth() - mTopWindow.winWidth/2)) {
+                            mMoveX = (mTextureView.getWidth() - mTopWindow.winWidth/2) - mPoint.x;
                         }
-                        if (mPoint.x + mMoveX < 0) {
-                            mMoveX = 0 - mPoint.x;
+                        if (mPoint.x + mMoveX < mTopWindow.winWidth/2) {
+                            mMoveX = mTopWindow.winWidth/2 - mPoint.x;
                         }
-                        if (mPoint.y + mMoveY > mTextureView.getHeight()+location[1]) {
-                            mMoveY = mTextureView.getHeight()+location[1] - mPoint.y;
+                        if (mPoint.y + mMoveY > (mTextureView.getHeight() - mTopWindow.winHeight/2) + location[1]) {
+                            mMoveY = (mTextureView.getHeight() - mTopWindow.winHeight/2) + location[1] - mPoint.y;
                         }
-                        if (mPoint.y + mMoveY < mTextureView.getHeight()/4+location[1]) {
-                            mMoveY = mTextureView.getHeight()/4+location[1] - mPoint.y;
+                        if (mPoint.y + mMoveY < mTopWindow.winHeight/2 + location[1]) {
+                            mMoveY = mTopWindow.winHeight/2 + location[1] - mPoint.y;
                         }
 
                         mGLRenderThread.setmTransplateX((mMoveFinalX + mMoveX) / 1280 * 2);
@@ -275,7 +289,8 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
                     mMoveFinalY += mMoveY;
                     Log.d(TAG, "[TouchEvent] mMoveFinal-> X: " + mMoveFinalX + ", Y: " + mMoveFinalY);
                     mPoint.set((int) mMoveX + mPoint.x, (int) mMoveY + mPoint.y);
-                    mGLRenderThread.setmSmallTriangleCenter(mPoint);
+                    mTopWindow.setLocation(mPoint);
+                    mGLRenderThread.setmCurWindowPos(mTopWindow);
                     isFocusCenter = false;
                 }
                 break;
@@ -287,9 +302,12 @@ public class GLCameraDemo extends Activity implements TextureView.SurfaceTexture
 class GLRenderThread extends Thread {
     private static final String TAG = "CLRenderThread";
 
-    private Point mSmallTriangleCenter;
+    private TopWindow mTopWindowOrigPos;
+    private TopWindow mCurWindowPos;
+
     private float mTransplateX = 0;
     private float mTransplateY = 0;
+    private float mScale = 0;
     private static final int FLOAT_SIZE = 4;
     private static final int TRIANGLE_VERTICES_STRIDE = 5 * FLOAT_SIZE;
     private static final int TRIANGLE_VERTICES_POS_OFFSET = 0;
@@ -414,7 +432,8 @@ class GLRenderThread extends Thread {
                 * FLOAT_SIZE).order(ByteOrder.nativeOrder()).asFloatBuffer();
         mSmallTriangleVertices.put(mSmallTriangleVerticesData).position(0);
 
-        mSmallTriangleCenter = new Point(mTextureViewWidth/4*3, mTextureViewHeight/4 + 122);
+        mTopWindowOrigPos = new TopWindow(new Point(mTextureViewWidth/8*7, mTextureViewHeight/8), mTextureViewWidth/4, mTextureViewHeight/4, 1.0f, 0);
+        setmCurWindowPos(mTopWindowOrigPos);
         Matrix.setIdentityM(mSTMatrix, 0);
         Matrix.setIdentityM(mMMatrix, 0);
 
@@ -460,20 +479,16 @@ class GLRenderThread extends Thread {
         termGL();
     }
 
-    public Point getmSmallTriangleCenter() {
-        return mSmallTriangleCenter;
-    }
-
-    public void setmSmallTriangleCenter(Point point) {
-        mSmallTriangleCenter = point;
-    }
-
     public void setmTransplateX(float x) {
-        mTransplateX = x;
+        this.mTransplateX = x;
     }
 
     public void setmTransplateY(float y) {
-        mTransplateY = y;
+        this.mTransplateY = y;
+    }
+
+    public void setmScale(float mScale) {
+        this.mScale = mScale;
     }
 
     public void onPause() {
@@ -869,6 +884,18 @@ class GLRenderThread extends Thread {
         mEGLSurface = EGL10.EGL_NO_SURFACE;
     }
 
+    public TopWindow getmTopWindowOrigPos() {
+        return mTopWindowOrigPos;
+    }
+
+    public TopWindow getmCurWindowPos() {
+        return mCurWindowPos;
+    }
+
+    public void setmCurWindowPos(TopWindow mCurWindowPos) {
+        this.mCurWindowPos = mCurWindowPos;
+    }
+
     static class CompareSizesByArea implements Comparator<Size> {
         @Override
         public int compare(Size lhs, Size rhs) {
@@ -990,6 +1017,54 @@ class GLRenderThread extends Thread {
         }
     }
 }
+
+class TopWindow {
+    public Point centerPoint;
+    public int winWidth;
+    public int winHeight;
+    public float winRatio;
+    public float winRotate;
+
+    public TopWindow() {}
+
+    public TopWindow(Point point, int width, int height, float ratio, float rotate) {
+        this.centerPoint = point;
+        this.winWidth = width;
+        this.winHeight = height;
+        this.winRatio = ratio;
+        this.winRotate = rotate;
+    }
+
+    public TopWindow(TopWindow topWindow) {
+        this.centerPoint = topWindow.centerPoint;
+        this.winWidth = topWindow.winWidth;
+        this.winHeight = topWindow.winHeight;
+        this.winRatio = topWindow.winRatio;
+        this.winRotate = topWindow.winRotate;
+    }
+
+    public void setLocation(Point point) {
+        this.centerPoint = point;
+    }
+
+    public Point getLocation() {
+        return this.centerPoint;
+    }
+
+    public void setWindowSize(int width, int height) {
+        this.winWidth = width;
+        this.winHeight = height;
+    }
+
+    public void setWindowRatio(float ratio) {
+        this.winRatio = ratio;
+    }
+
+    public void setWindowRotate(float rotate) {
+        this.winRotate = rotate;
+    }
+}
+
 class VideoEncoderThread extends Thread {
     private static final String TAG = "VideoEncoderThread";
     private static final File OUTPUT_DIR = Environment.getExternalStorageDirectory();
